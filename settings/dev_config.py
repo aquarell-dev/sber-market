@@ -1,6 +1,8 @@
 import os
 
 # folders
+TEMP = os.path.join(os.getcwd(), 'files')
 
-# files
-CHROMEDRIVER = os.path.join(os.getcwd(), 'chromedriver', 'chromedriver')
+# settings
+threads = 4
+cool_down = 1
