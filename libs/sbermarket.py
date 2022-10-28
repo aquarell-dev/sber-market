@@ -1,120 +1,166 @@
-from selenium.common.exceptions import WebDriverException
-from selenium.common import exceptions
-from selenium.webdriver import ActionChains
-from selenium.webdriver.remote.webelement import WebElement
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.wait import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import Select
-from selenium.webdriver.common.keys import Keys
-
 from typing import Tuple, List, Union
+from .types import Urls, Store, Category
 
-from settings.dev_config import CHROMEDRIVER
+from .asyncfetch import Fetch
+from settings.dev_config import TEMP
 
-from .core import Core
+import asyncio
+
+import json, os, datetime
 
 
 class SberMarket:
     def __init__(self):
-        self._driver = Core(executable_path=CHROMEDRIVER).initialize_driver()
-        # self._driver = Docker().initialize_driver()
+        self._fetch = Fetch()
+        self._semaphore = asyncio.BoundedSemaphore(4)
 
-        self._wait = WebDriverWait(self._driver, 10)
-        self._ac = ActionChains(self._driver)
+        self._store_counter = 0
+        self._category_counter = 0
 
-    def open_map(self):
-        if not self._safe_get('https://sbermarket.ru/'):
-            raise RuntimeError('Не установлено соединение с сайтом.')
+        self._data = Urls(
+            retailer_url='https://sbermarket.ru/api/retailers',
+            stores_url='https://sbermarket.ru/api/stores?city_id=%s&retailer_id=%s&include=full_address,distance,opening_hours_text&shipping_method=pickup_from_store&zero_price=true',
+            categories_url='https://sbermarket.ru/api/stores/%s/categories?depth=2&include=&reset_cache=true'
+        )
 
-        # map_btn_locator = (By.XPATH, '//button[@type="button" and contains(., "Показать на карте")]')
-        map_btn_locator = (By.XPATH, '//*[@id="by_courier"]/div[1]/div/div[1]/button')
+    headers = {
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/106.0.0.0 Safari/537.36',
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/plain, */*',
+        'client-token': '7ba97b6f4049436dab90c789f946ee2f',
+        'api-version': '3.0'
+    }
 
-        self._safe_click(map_btn_locator, 'Кнопка карты не найдена.')
+    async def gather_retailer_slugs(self) -> List[str]:
+        retailers, status = await self._fetch.fetch(
+            url=self._data.retailer_url,
+            message='[+] Собраны ритейлеры',
+        )
 
-        pickup_btn_locator = (By.XPATH, '/html/body/div[3]/div/div[3]/main/div/div/div[1]/div[1]/button[2]')
+        if status != 200: raise RuntimeError('[-] Ошибка при выполнении запроса')
 
-        self._safe_click(pickup_btn_locator, 'Кнопка самовывоза не найдена')
+        retailer_slugs = []
 
-        show_list_btn_locator = (By.XPATH, '/html/body/div[3]/div/div[3]/main/div/div/div/button')
+        retailers = retailers['retailers']
 
-        self._safe_click(show_list_btn_locator, 'Кнопка показа списка магазинов не найдена.')
+        print(f'[+] Найдено {len(retailers)} ритейлеров')
 
-    def _select_city(self, value: str):
-        select_locator = (By.XPATH, '/html/body/div[4]/div/div[3]/main/div[1]/select')
+        for retailer in retailers:
+            retailer_slugs.append(retailer['slug'])
 
-        select = Select(self._scroll_down_modal(select_locator, 'Дроп-даун не найден.'))
+        return retailer_slugs
 
-        select.select_by_value(value)
+    async def get_retailer_stores(self, store_data: Tuple[str, str], retailer_stores: List[Store], total: int):
+        city_id, retailer_id = store_data
 
-    def gather_store_links(self, city_values: List[str]):
-        modal_locator = (By.XPATH, '//div[@class="PickupStoresModal_retailers__qcstX"]')
+        stores, status = await self._fetch.boundFetch(
+            semaphore=self._semaphore,
+            url=self._data.get_stores_url(city_id, retailer_id),
+            headers=self.headers,
+            time_sleep=1,
+        )
 
-        for value in city_values:
-            self._select_city(value)
+        self._store_counter += 1
 
-            modal = self._scroll_down_modal(modal_locator, 'Модальное окно не найдено.')
+        if status == 404: return print(f'[-] Сеть магазинов {retailer_id} не найдена в городе {city_id} ({self._get_percentage(self._store_counter, total)})')
 
-            stores_locator = (By.XPATH, '//div[@class="RetailerItem_root__PRA2_"]')
-            store_locator = (By.XPATH, '//div[@class="Store_root__Rn8Lu"]')
+        if status != 200: return print(f'[-] Ошибка при выполнении запроса ({self._get_percentage(self._store_counter, total)})')
 
-            if not self._does_element_exist(stores_locator): continue
+        print(f'[+] Найдена сеть {retailer_id} в городе {city_id} ({self._get_percentage(self._store_counter, total)})')
 
-            stores = modal.find_elements(*stores_locator)
-
-            for store in stores[::-1]:
-                self._ac.move_to_element(store).click().perform()
-
-                if not self._does_element_exist(store_locator): continue
-
-                small_stores = None
-
-    def _does_element_exist(self, locator: Tuple[str, str]) -> bool:
-        """ Returns True if element exists or else False. """
-        try:
-            self._wait.until(
-                EC.presence_of_element_located(
-                    locator
+        for store in stores:
+            retailer_stores.append(
+                Store(
+                    sid=store['store_id'],
+                    address=store['full_address'],
+                    retailer_id=retailer_id,
+                    title=store['name'],
+                    url=f'https://sbermarket.ru/{retailer_id}?sid={store["store_id"]}'
                 )
             )
-        except (exceptions.TimeoutException, exceptions.StaleElementReferenceException):
-            return False
 
-        return True
-
-    def _safe_get(self, url: str) -> bool:
-        """ Goes to the page or else throws an error. """
-        try:
-            self._driver.get(url)
-        except WebDriverException:
-            return False
-
-        return True
-
-    def _move_and_click(self, element: WebElement):
-        self._ac.move_to_element(element).click().perform()
-
-    def _raise_if_not_found(self, locator: Tuple[str, str], message: str):
-        if not self._does_element_exist(locator):
-            raise RuntimeError(message)
-
-    def _scroll_down_modal(self, locator: Tuple[str, str], message: str) -> Union[WebElement, Select]:
-        self._raise_if_not_found(locator, message)
-
-        element = self._driver.find_element(*locator)
-
-        # load select inner html
-        self._ac.move_to_element(element).click().send_keys(Keys.END).perform()
-
-        return element
-
-    def _safe_click(self, locator: Tuple[str, str], not_found_error_msg: str):
-        """
-        Waits till element is found else throws an error.
-        Moves to the element and clicks it.
-        """
-        self._raise_if_not_found(locator, not_found_error_msg)
-
-        self._move_and_click(
-            self._driver.find_element(*locator)
+    async def get_store_categories(self, store: Store, total: int):
+        categories, status = await self._fetch.boundFetch(
+            semaphore=self._semaphore,
+            url=self._data.get_categories_url(store.sid),
+            headers=self.headers,
+            time_sleep=1,
         )
+
+        self._category_counter += 1
+
+        if status != 200: return print(f'[-] Не удалось получить категории магазина '
+                                       f'{store.title} ({self._get_percentage(self._category_counter, total)})')
+
+        print(f'[+] Категории(кол-во: {len(categories)}) магазина {store.title} получены. ({self._get_percentage(self._category_counter, total)})')
+
+        categories_list = []
+
+        for category in categories['categories']:
+            children = []
+
+            if category.get('children'):
+                for child in category['children']:
+                    children.append(
+                        Category(
+                            title=child['name'],
+                            url=f"https://sbermarket.ru/{store.retailer_id}/c/{child['slug']}?sid={store.sid}&source=category"
+                        )
+                    )
+
+            categories_list.append(
+                Category(
+                    title=category['name'],
+                    url=f"https://sbermarket.ru/{store.retailer_id}/c/{category['slug']}?sid={store.sid}",
+                    children=children
+                )
+            )
+
+        store.categories = categories_list
+
+    def _get_percentage(self, current: int, total: int) -> str:
+        return str(round(current/total*100, 2)) + '%'
+
+    def _store_to_dict(self, store) -> dict:
+        categories = []
+
+        if store.categories:
+            for category in store.categories:
+                children = []
+
+                if category.children:
+                    for child in category.children:
+                        children.append({
+                            'title': child.title,
+                            'url': child.url
+                        })
+
+                categories.append({
+                    'title': category.title,
+                    'url': category.url,
+                    'children': children
+                })
+
+        return {
+            'title': store.title,
+            'sid': store.sid,
+            'address': store.address,
+            'url': store.url,
+            'categories': categories
+        }
+
+    def save_to_json(self, stores):
+        stores = [self._store_to_dict(store) for store in stores]
+
+        data = {
+            'data': stores
+        }
+
+        date = datetime.datetime.now().strftime('%H-%M-%Y-%m-%d')
+
+        path = os.path.join(TEMP, f'sber-{date}.json')
+
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+        print(f'[+] File saved. Path: {path}.')
