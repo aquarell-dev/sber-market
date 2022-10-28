@@ -1,4 +1,6 @@
 from libs.sbermarket import SberMarket
+from settings.user_config import CITIES
+
 import asyncio
 
 
@@ -7,15 +9,11 @@ async def main():
 
     retailers = await sber_market.gather_retailer_slugs()
 
-    cities = ['8']
-
-    info = [(city, retailer) for city in cities for retailer in retailers]
-
-    info = info[:50:]
+    data = sber_market.get_parsing_data(CITIES, retailers)
 
     stores = []
 
-    store_tasks = [sber_market.get_retailer_stores(inf, stores, len(info)) for inf in info]
+    store_tasks = [sber_market.get_retailer_stores(inf, stores, len(data)) for inf in data]
 
     await asyncio.wait(store_tasks)
 

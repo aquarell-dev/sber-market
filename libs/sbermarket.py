@@ -1,8 +1,9 @@
-from typing import Tuple, List, Union
+from typing import Tuple, List
 from .types import Urls, Store, Category
 
 from .asyncfetch import Fetch
 from settings.dev_config import TEMP
+from settings.dev_config import threads, cool_down
 
 import asyncio
 
@@ -12,7 +13,7 @@ import json, os, datetime
 class SberMarket:
     def __init__(self):
         self._fetch = Fetch()
-        self._semaphore = asyncio.BoundedSemaphore(4)
+        self._semaphore = asyncio.BoundedSemaphore(threads)
 
         self._store_counter = 0
         self._category_counter = 0
@@ -57,7 +58,7 @@ class SberMarket:
             semaphore=self._semaphore,
             url=self._data.get_stores_url(city_id, retailer_id),
             headers=self.headers,
-            time_sleep=1,
+            time_sleep=cool_down,
         )
 
         self._store_counter += 1
@@ -84,7 +85,7 @@ class SberMarket:
             semaphore=self._semaphore,
             url=self._data.get_categories_url(store.sid),
             headers=self.headers,
-            time_sleep=1,
+            time_sleep=cool_down,
         )
 
         self._category_counter += 1
@@ -117,6 +118,9 @@ class SberMarket:
             )
 
         store.categories = categories_list
+
+    def get_parsing_data(self, cities, retailers) -> list:
+        return [(city, retailer) for city in cities for retailer in retailers]
 
     def _get_percentage(self, current: int, total: int) -> str:
         return str(round(current/total*100, 2)) + '%'
